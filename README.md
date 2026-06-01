@@ -69,6 +69,19 @@ Envie de verdade:
 4. O cron está configurado como `30 9 * * *`, pois o Render usa UTC. Isso equivale a `06:30` em `America/Sao_Paulo`.
 5. Use `Trigger Run` no Render para testar o envio real.
 
+## Alternativa gratis: Google Apps Script
+
+Se GitHub Actions ou Render nao conseguirem acessar `https://dodf.df.gov.br`, use a versao em `apps_script/`.
+
+1. Acesse https://script.google.com/.
+2. Crie um projeto novo.
+3. Cole o conteudo de `apps_script/Code.gs` no arquivo `Code.gs`.
+4. Rode a funcao `sendDodfSemobReport` para testar o envio.
+5. Autorize o script na conta Google que sera o remetente.
+6. Rode a funcao `setupDailyTrigger` uma vez para criar o agendamento perto de 06:30.
+
+O Apps Script envia pela conta que autorizou o projeto e usa `UrlFetchApp` para acessar o DODF por HTTPS, sem depender de porta SMTP liberada.
+
 ## Testes
 
 ```powershell
