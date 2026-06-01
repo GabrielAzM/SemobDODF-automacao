@@ -22,3 +22,5 @@ Use esta alternativa quando GitHub Actions ou Render nao conseguirem acessar `ht
 ## Observacoes
 
 O Apps Script envia o email pela conta Google que autorizou o script. O horario de gatilhos do Apps Script pode ter pequena variacao, conforme politica da propria plataforma.
+
+Se o teste falhar com `Exception: Address unavailable`, o Google nao conseguiu acessar o dominio do DODF. Use o modo local do Windows documentado no `README.md` da raiz do projeto.

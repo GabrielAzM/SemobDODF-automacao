@@ -82,6 +82,33 @@ Se GitHub Actions ou Render nao conseguirem acessar `https://dodf.df.gov.br`, us
 
 O Apps Script envia pela conta que autorizou o projeto e usa `UrlFetchApp` para acessar o DODF por HTTPS, sem depender de porta SMTP liberada.
 
+Se aparecer `Exception: Address unavailable`, o Google tambem nao conseguiu acessar o DODF. Nesse caso, use o agendamento local abaixo.
+
+## Agendamento local no Windows
+
+Use este modo quando o DODF so abre pela rede do seu computador, VPN ou rede do orgao.
+
+1. Prepare o Gmail API e o `.env` local:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup_local_gmail_api.ps1
+```
+
+2. No navegador que abrir, autorize a conta Google remetente.
+3. Envie um teste:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_local_report.ps1
+```
+
+4. Se o email chegar, crie a tarefa diaria das 06:30:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_task.ps1
+```
+
+Os logs ficam em `logs/`. O computador precisa estar ligado e com acesso ao DODF no horario do envio.
+
 ## Testes
 
 ```powershell
