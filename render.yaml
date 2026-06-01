@@ -1,0 +1,39 @@
+services:
+  - type: cron
+    name: dodf-semob-report
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python dodf_semob_report.py
+    schedule: "30 9 * * *"
+    envVars:
+      - key: EMAIL_DELIVERY
+        value: smtp
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MAIL_TO
+        sync: false
+      - key: ATTACH_PDF
+        value: "true"
+      - key: MAX_ATTACHMENT_MB
+        value: "20"
+      - key: SEND_EMPTY_REPORT
+        value: "true"
+      - key: DODF_BASE_URL
+        value: https://dodf.df.gov.br
+      - key: TIMEZONE
+        value: America/Sao_Paulo
+      - key: HTTP_TIMEOUT_SECONDS
+        value: "30"
+      - key: MAX_RETRIES
+        value: "6"
+      - key: RETRY_DELAY_SECONDS
+        value: "300"
