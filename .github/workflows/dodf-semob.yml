@@ -1,0 +1,43 @@
+name: DODF SEMOB report
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 9 * * *"
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      EMAIL_DELIVERY: smtp
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: "587"
+      SMTP_USER: gabrielzvd616@gmail.com
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      MAIL_FROM: gabrielzvd616@gmail.com
+      MAIL_TO: thaysdiasr@gmail.com
+      ATTACH_PDF: "true"
+      MAX_ATTACHMENT_MB: "20"
+      SEND_EMPTY_REPORT: "true"
+      DODF_BASE_URL: https://dodf.df.gov.br
+      TIMEZONE: America/Sao_Paulo
+      HTTP_TIMEOUT_SECONDS: "30"
+      MAX_RETRIES: "6"
+      RETRY_DELAY_SECONDS: "300"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send DODF SEMOB email
+        run: python dodf_semob_report.py
