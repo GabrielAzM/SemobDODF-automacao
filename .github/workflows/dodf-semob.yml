@@ -11,6 +11,7 @@ jobs:
     timeout-minutes: 15
 
     env:
+      PYTHONUNBUFFERED: "1"
       EMAIL_DELIVERY: smtp
       SMTP_HOST: smtp.gmail.com
       SMTP_PORT: "587"
@@ -23,9 +24,9 @@ jobs:
       SEND_EMPTY_REPORT: "true"
       DODF_BASE_URL: https://dodf.df.gov.br
       TIMEZONE: America/Sao_Paulo
-      HTTP_TIMEOUT_SECONDS: "30"
-      MAX_RETRIES: "6"
-      RETRY_DELAY_SECONDS: "300"
+      HTTP_TIMEOUT_SECONDS: "20"
+      MAX_RETRIES: "2"
+      RETRY_DELAY_SECONDS: "10"
 
     steps:
       - name: Checkout

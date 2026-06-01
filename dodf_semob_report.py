@@ -105,6 +105,10 @@ class DodfError(RuntimeError):
     pass
 
 
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
 def normalize_text(value: Any) -> str:
     text = str(value or "")
     text = html.unescape(text)
@@ -411,6 +415,10 @@ class DodfClient:
                 last_error = exc
                 if attempt >= self.config.max_retries:
                     break
+                log(
+                    f"Tentativa {attempt}/{self.config.max_retries} falhou ao acessar {url}. "
+                    f"Nova tentativa em {self.config.retry_delay_seconds}s."
+                )
                 time.sleep(self.config.retry_delay_seconds)
 
         raise DodfError(f"Falha ao acessar {url}: {last_error}") from last_error
@@ -502,20 +510,25 @@ def dedupe_materias(items: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], 
 
 
 def build_report(config: Config) -> Report:
+    log("Carregando Diário do Dia no DODF...")
     client = DodfClient(config)
     diario = client.load_diario()
 
     semob_codes = collect_semob_codes(diario.demandantes)
+    log(f"Códigos SEMOB encontrados: {', '.join(semob_codes) if semob_codes else 'nenhum'}")
     if semob_codes and diario.timestamp is not None:
+        log("Consultando publicações da SEMOB...")
         raw_materias = client.fetch_filtered_materias(diario, semob_codes)
     else:
         raw_materias = tuple()
 
     # Fallback for days where the site omits demandante metadata but the page still lists SEMOB items.
     raw_materias = tuple(item for item in raw_materias if materia_matches_semob(item))
+    log(f"Publicações SEMOB encontradas: {len(raw_materias)}")
     materias: list[Materia] = []
     for item in raw_materias:
         try:
+            log(f"Extraindo texto completo da matéria {item.get('coMateria') or item.get('co_materia')}...")
             full_text = client.fetch_full_text(item)
         except Exception as exc:
             fallback = clean_extracted_text(str(item.get("texto") or ""))
@@ -530,6 +543,7 @@ def build_report(config: Config) -> Report:
     if config.attach_pdf and diario.pdfs:
         pdf = diario.pdfs[0]
         try:
+            log("Baixando PDF do DODF para anexo...")
             content = client.download_pdf(pdf)
             filename = parse_pdf_filename(pdf.url, pdf.name)
             pdf_attachment_result = decide_pdf_attachment(filename, content, config.max_attachment_bytes)
@@ -748,9 +762,13 @@ def send_email_gmail_api(config: Config, message: EmailMessage) -> None:
 
 
 def send_email_smtp(config: Config, message: EmailMessage) -> None:
+    log(f"Conectando ao SMTP {config.smtp_host}:{config.smtp_port}...")
     with smtplib.SMTP(config.smtp_host, config.smtp_port, timeout=config.http_timeout_seconds) as smtp:
+        log("Iniciando TLS...")
         smtp.starttls()
+        log(f"Autenticando SMTP como {config.smtp_user}...")
         smtp.login(config.smtp_user, config.smtp_password)
+        log(f"Enviando email para {', '.join(config.mail_to)}...")
         smtp.send_message(message)
 
 
@@ -810,6 +828,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         message = build_email_message(config, report)
+        log(f"Modo de envio: {config.email_delivery}")
         send_email(config, message)
         print(f"Email enviado para {', '.join(config.mail_to)}.")
         return 0
