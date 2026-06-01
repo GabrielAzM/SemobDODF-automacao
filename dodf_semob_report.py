@@ -9,6 +9,7 @@ import re
 import smtplib
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import date, datetime
 from email.message import EmailMessage
@@ -26,6 +27,34 @@ SEMOB_TERMS = (
     "SEMOB",
     "SECRETARIA DE ESTADO DE TRANSPORTE E MOBILIDADE",
     "TRANSPORTE E MOBILIDADE",
+)
+
+DEFAULT_DODF_KEYWORDS = (
+    "SEMOB",
+    "SECRETARIA DE ESTADO DE TRANSPORTE E MOBILIDADE",
+    "TRANSPORTE E MOBILIDADE",
+    "MOBILIDADE",
+    "METRO-DF",
+    "METRO/DF",
+    "METRÔ-DF",
+    "METRÔ/DF",
+    "COMPANHIA DO METROPOLITANO DO DISTRITO FEDERAL",
+    "DFTRANS",
+    "DER-DF",
+    "DER/DF",
+    "DEPARTAMENTO DE ESTRADAS DE RODAGEM",
+    "DETRAN-DF",
+    "DETRAN/DF",
+    "DEPARTAMENTO DE TRÂNSITO",
+    "TRANSPORTE PÚBLICO",
+    "SISTEMA DE TRANSPORTE PÚBLICO COLETIVO",
+    "STPC/DF",
+    "BILHETAGEM",
+    "TARIFAS E CONTROLE DE BILHETAGEM",
+    "TRANSPORTES URBANOS",
+    "TÉCNICO DE TRANSPORTES URBANOS",
+    "SOCIEDADE DE TRANSPORTES COLETIVOS DE BRASÍLIA",
+    "TCB",
 )
 
 GMAIL_API_SCOPES = ("https://www.googleapis.com/auth/gmail.send",)
@@ -50,6 +79,10 @@ class Config:
     http_timeout_seconds: int
     max_retries: int
     retry_delay_seconds: int
+    scan_full_diario: bool
+    dodf_keywords: tuple[str, ...]
+    relevant_snippets_only: bool
+    relevant_context_lines: int
 
     @property
     def max_attachment_bytes(self) -> int:
@@ -84,6 +117,8 @@ class Materia:
     agency: str
     url: str
     full_text: str
+    match_reason: str = ""
+    matched_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -112,6 +147,8 @@ def log(message: str) -> None:
 def normalize_text(value: Any) -> str:
     text = str(value or "")
     text = html.unescape(text)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
     text = re.sub(r"\s+", " ", text, flags=re.UNICODE).strip()
     return text.upper()
 
@@ -124,6 +161,22 @@ def parse_bool(value: str | None, default: bool = False) -> bool:
 
 def parse_recipients(raw: str) -> tuple[str, ...]:
     return tuple(part.strip() for part in re.split(r"[,;]", raw or "") if part.strip())
+
+
+def parse_keywords(raw: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    if raw is None or not raw.strip():
+        return default
+    return tuple(part.strip() for part in re.split(r"[|;\n]", raw) if part.strip())
+
+
+def matching_terms(text: Any, keywords: tuple[str, ...]) -> tuple[str, ...]:
+    normalized = normalize_text(text)
+    matches: list[str] = []
+    for keyword in keywords:
+        normalized_keyword = normalize_text(keyword)
+        if normalized_keyword and normalized_keyword in normalized and keyword not in matches:
+            matches.append(keyword)
+    return tuple(matches)
 
 
 def load_config(require_email: bool = True) -> Config:
@@ -154,6 +207,10 @@ def load_config(require_email: bool = True) -> Config:
         http_timeout_seconds=int(os.getenv("HTTP_TIMEOUT_SECONDS", "30")),
         max_retries=max(1, int(os.getenv("MAX_RETRIES", "6"))),
         retry_delay_seconds=max(0, int(os.getenv("RETRY_DELAY_SECONDS", "300"))),
+        scan_full_diario=parse_bool(os.getenv("SCAN_FULL_DIARIO"), True),
+        dodf_keywords=parse_keywords(os.getenv("DODF_KEYWORDS"), DEFAULT_DODF_KEYWORDS),
+        relevant_snippets_only=parse_bool(os.getenv("RELEVANT_SNIPPETS_ONLY"), True),
+        relevant_context_lines=max(0, int(os.getenv("RELEVANT_CONTEXT_LINES", "0"))),
     )
 
     if require_email:
@@ -300,7 +357,7 @@ def collect_semob_codes(demandantes: dict[str, Any]) -> tuple[str, ...]:
         if isinstance(rastreio, list):
             values.extend(rastreio)
         joined = normalize_text(" ".join(str(value) for value in values))
-        return any(term in joined for term in SEMOB_TERMS)
+        return bool(matching_terms(joined, SEMOB_TERMS))
 
     def walk(items: dict[str, Any], inherited_match: bool = False) -> None:
         for code, raw_node in items.items():
@@ -324,8 +381,23 @@ def materia_matches_semob(materia: dict[str, Any]) -> bool:
         text = " ".join(str(part) for part in poder)
     else:
         text = str(poder)
-    normalized = normalize_text(text)
-    return any(term in normalized for term in SEMOB_TERMS)
+    return bool(matching_terms(text, SEMOB_TERMS))
+
+
+def materia_search_text(materia: dict[str, Any]) -> str:
+    poder = materia.get("poder", "")
+    agency = " ".join(str(part) for part in poder) if isinstance(poder, list) else str(poder or "")
+    values = [
+        materia.get("titulo", ""),
+        materia.get("ds_titulo", ""),
+        materia.get("secao", ""),
+        materia.get("ds_secao", ""),
+        materia.get("tipo", ""),
+        materia.get("ds_materia_tipo", ""),
+        agency,
+        materia.get("texto", ""),
+    ]
+    return "\n".join(str(value or "") for value in values)
 
 
 def materia_url(base_url: str, materia: dict[str, Any]) -> str:
@@ -352,6 +424,38 @@ def extract_full_text(materia_html: str) -> str:
     return clean_extracted_text(content.get_text("\n", strip=True))
 
 
+def extract_relevant_blocks(text: str, keywords: tuple[str, ...], context_lines: int = 0) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    selected_indexes: set[int] = set()
+    for index, line in enumerate(lines):
+        if matching_terms(line, keywords):
+            start = max(0, index - context_lines)
+            end = min(len(lines), index + context_lines + 1)
+            selected_indexes.update(range(start, end))
+
+    if not selected_indexes:
+        return ""
+
+    chunks: list[str] = []
+    current: list[str] = []
+    previous_index: int | None = None
+
+    for index in sorted(selected_indexes):
+        if previous_index is not None and index != previous_index + 1:
+            chunks.append("\n".join(current))
+            current = []
+        current.append(lines[index])
+        previous_index = index
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return "\n\n...\n\n".join(chunks)
+
+
 def decide_pdf_attachment(filename: str, content: bytes, max_bytes: int) -> PdfAttachmentResult:
     if not content:
         return PdfAttachmentResult(status="PDF não foi baixado ou veio vazio.", attachment=None)
@@ -370,7 +474,13 @@ def decide_pdf_attachment(filename: str, content: bytes, max_bytes: int) -> PdfA
     )
 
 
-def to_materia(base_url: str, raw: dict[str, Any], full_text: str) -> Materia:
+def to_materia(
+    base_url: str,
+    raw: dict[str, Any],
+    full_text: str,
+    match_reason: str = "",
+    matched_terms: tuple[str, ...] = (),
+) -> Materia:
     poder = raw.get("poder", "")
     agency = " > ".join(str(part) for part in poder) if isinstance(poder, list) else str(poder or "")
     return Materia(
@@ -382,6 +492,8 @@ def to_materia(base_url: str, raw: dict[str, Any], full_text: str) -> Materia:
         agency=agency,
         url=materia_url(base_url, raw),
         full_text=full_text or clean_extracted_text(str(raw.get("texto") or "")),
+        match_reason=match_reason,
+        matched_terms=matched_terms,
     )
 
 
@@ -489,6 +601,21 @@ class DodfClient:
 
         return dedupe_materias(tuple(raw_items))
 
+    def fetch_all_materias(self, diario: DiarioInfo) -> tuple[dict[str, Any], ...]:
+        if diario.timestamp is None:
+            return tuple()
+
+        raw_items: list[dict[str, Any]] = []
+        first = self.post_diario(diario.timestamp, pagina=1)
+        total_pages = int(first.get("totalPaginas") or 0)
+        raw_items.extend(first.get("lstMaterias") or [])
+
+        for pagina in range(2, total_pages + 1):
+            page = self.post_diario(diario.timestamp, pagina=pagina)
+            raw_items.extend(page.get("lstMaterias") or [])
+
+        return dedupe_materias(tuple(raw_items))
+
     def fetch_full_text(self, raw_materia: dict[str, Any]) -> str:
         response = self.request("GET", materia_url(self.config.dodf_base_url, raw_materia))
         return extract_full_text(response.text)
@@ -516,17 +643,37 @@ def build_report(config: Config) -> Report:
 
     semob_codes = collect_semob_codes(diario.demandantes)
     log(f"Códigos SEMOB encontrados: {', '.join(semob_codes) if semob_codes else 'nenhum'}")
+    raw_by_code: dict[str, dict[str, Any]] = {}
+    demandante_codes: set[str] = set()
+
     if semob_codes and diario.timestamp is not None:
         log("Consultando publicações da SEMOB...")
-        raw_materias = client.fetch_filtered_materias(diario, semob_codes)
-    else:
-        raw_materias = tuple()
+        for item in client.fetch_filtered_materias(diario, semob_codes):
+            code = str(item.get("coMateria") or item.get("co_materia") or "")
+            if code:
+                demandante_codes.add(code)
+                raw_by_code[code] = item
 
-    # Fallback for days where the site omits demandante metadata but the page still lists SEMOB items.
-    raw_materias = tuple(item for item in raw_materias if materia_matches_semob(item))
-    log(f"Publicações SEMOB encontradas: {len(raw_materias)}")
+    if config.scan_full_diario:
+        log("Varrendo todas as matérias do DODF para buscar menções a SEMOB/mobilidade...")
+        for item in client.fetch_all_materias(diario):
+            code = str(item.get("coMateria") or item.get("co_materia") or "")
+            if code and code not in raw_by_code:
+                raw_by_code[code] = item
+
+    raw_materias = tuple(raw_by_code.values())
+    log(f"Matérias candidatas para análise: {len(raw_materias)}")
     materias: list[Materia] = []
-    for item in raw_materias:
+    for index, item in enumerate(raw_materias, start=1):
+        code = str(item.get("coMateria") or item.get("co_materia") or "")
+        matched_by_demandante = code in demandante_codes
+        metadata_terms = matching_terms(materia_search_text(item), config.dodf_keywords)
+
+        if config.scan_full_diario and index == 1:
+            log("Abrindo textos completos para conferir termos relacionados...")
+        if config.scan_full_diario and index % 25 == 0:
+            log(f"Analisadas {index}/{len(raw_materias)} matérias...")
+
         try:
             log(f"Extraindo texto completo da matéria {item.get('coMateria') or item.get('co_materia')}...")
             full_text = client.fetch_full_text(item)
@@ -537,7 +684,43 @@ def build_report(config: Config) -> Report:
                 + "\n\n"
                 + f"[Aviso: não foi possível abrir a página completa da matéria: {exc}]"
             ).strip()
-        materias.append(to_materia(config.dodf_base_url, item, full_text))
+
+        full_terms = matching_terms(materia_search_text(item) + "\n" + full_text, config.dodf_keywords)
+        strict_semob_agency = materia_matches_semob(item)
+        if not matched_by_demandante and not strict_semob_agency and not metadata_terms and not full_terms:
+            continue
+
+        matched_terms = tuple(dict.fromkeys(metadata_terms + full_terms))
+        if matched_by_demandante or strict_semob_agency:
+            report_text = full_text
+            match_reason = "Demandante/órgão SEMOB"
+        elif config.relevant_snippets_only:
+            relevant_blocks = extract_relevant_blocks(
+                full_text,
+                config.dodf_keywords,
+                context_lines=config.relevant_context_lines,
+            )
+            report_text = (
+                "Trechos relevantes da matéria ampla:\n\n" + relevant_blocks
+                if relevant_blocks
+                else full_text
+            )
+            match_reason = "Menção textual no DODF"
+        else:
+            report_text = full_text
+            match_reason = "Menção textual no DODF"
+
+        materias.append(
+            to_materia(
+                config.dodf_base_url,
+                item,
+                report_text,
+                match_reason=match_reason,
+                matched_terms=matched_terms,
+            )
+        )
+
+    log(f"Publicações relacionadas encontradas: {len(materias)}")
 
     pdf_attachment_result = None
     if config.attach_pdf and diario.pdfs:
@@ -599,9 +782,11 @@ def build_plain_body(report: Report) -> str:
                 f"Seção: {materia.section}",
                 f"Tipo: {materia.kind}",
                 f"Órgão: {materia.agency}",
+                f"Origem do filtro: {materia.match_reason or 'SEMOB/mobilidade'}",
+                f"Termos encontrados: {', '.join(materia.matched_terms) if materia.matched_terms else 'n/a'}",
                 f"Link oficial: {materia.url}",
                 "",
-                "Texto completo:",
+                "Texto:",
                 materia.full_text or "Texto não disponível no HTML. Consulte o link oficial.",
                 "",
                 "-" * 72,
@@ -651,9 +836,11 @@ def build_html_body(report: Report) -> str:
                     f"<li><strong>Seção:</strong> {html.escape(materia.section)}</li>",
                     f"<li><strong>Tipo:</strong> {html.escape(materia.kind)}</li>",
                     f"<li><strong>Órgão:</strong> {html.escape(materia.agency)}</li>",
+                    f"<li><strong>Origem do filtro:</strong> {html.escape(materia.match_reason or 'SEMOB/mobilidade')}</li>",
+                    f"<li><strong>Termos encontrados:</strong> {html.escape(', '.join(materia.matched_terms) if materia.matched_terms else 'n/a')}</li>",
                     f'<li><strong>Link oficial:</strong> <a href="{html.escape(materia.url)}">{html.escape(materia.url)}</a></li>',
                     "</ul>",
-                    "<p><strong>Texto completo:</strong></p>",
+                    "<p><strong>Texto:</strong></p>",
                     (
                         '<div style="white-space: pre-wrap; font-family: Arial, sans-serif; line-height: 1.45;">'
                         + html_paragraphs(
@@ -791,6 +978,9 @@ def print_dry_run(report: Report) -> None:
         print()
         print(f"{index}. {materia.title}")
         print(f"   {materia.section} | {materia.kind} | {materia.agency}")
+        print(f"   filtro: {materia.match_reason or 'SEMOB/mobilidade'}")
+        if materia.matched_terms:
+            print(f"   termos: {', '.join(materia.matched_terms)}")
         print(f"   {materia.url}")
         preview = materia.full_text[:500].replace("\n", " ")
         print(f"   {preview}{'...' if len(materia.full_text) > 500 else ''}")

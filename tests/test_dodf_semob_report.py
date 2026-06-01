@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 
 from dodf_semob_report import (
     Config,
+    DEFAULT_DODF_KEYWORDS,
     DiarioInfo,
     PdfInfo,
     Report,
@@ -13,6 +14,8 @@ from dodf_semob_report import (
     collect_semob_codes,
     decide_pdf_attachment,
     extract_full_text,
+    extract_relevant_blocks,
+    matching_terms,
 )
 
 
@@ -35,6 +38,10 @@ def config() -> Config:
         http_timeout_seconds=30,
         max_retries=1,
         retry_delay_seconds=0,
+        scan_full_diario=True,
+        dodf_keywords=DEFAULT_DODF_KEYWORDS,
+        relevant_snippets_only=True,
+        relevant_context_lines=0,
     )
 
 
@@ -85,6 +92,33 @@ def test_extract_full_text_from_html() -> None:
     """
 
     assert extract_full_text(html) == "Primeiro parágrafo da matéria.\nASSINATURA"
+
+
+def test_text_matching_finds_exoneracao_from_broad_decree() -> None:
+    text = """
+    EXONERAR, por estar sendo nomeado para outro cargo, RICARDO CARVALHO SILVA
+    do Cargo Publico de Natureza Especial, de Chefe, do Gabinete,
+    da Secretaria de Estado de Transporte e Mobilidade do Distrito Federal.
+    """
+
+    matches = matching_terms(text, DEFAULT_DODF_KEYWORDS)
+
+    assert "SECRETARIA DE ESTADO DE TRANSPORTE E MOBILIDADE" in matches
+
+
+def test_relevant_blocks_extracts_only_matching_lines() -> None:
+    text = "\n".join(
+        [
+            "EXONERAR pessoa de outro orgao.",
+            "EXONERAR pessoa da Secretaria de Estado de Transporte e Mobilidade do Distrito Federal.",
+            "NOMEAR pessoa de outro orgao.",
+        ]
+    )
+
+    result = extract_relevant_blocks(text, DEFAULT_DODF_KEYWORDS)
+
+    assert "Transporte e Mobilidade" in result
+    assert "outro orgao" not in result
 
 
 def test_email_without_results_mentions_empty_report() -> None:

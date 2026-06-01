@@ -60,6 +60,10 @@ Envie de verdade:
 - `SEND_EMPTY_REPORT`: `true` para enviar aviso mesmo sem publicações SEMOB.
 - `DODF_BASE_URL`: padrão `https://dodf.df.gov.br`.
 - `HTTP_TIMEOUT_SECONDS`, `MAX_RETRIES`, `RETRY_DELAY_SECONDS`: controle de rede e tentativas.
+- `SCAN_FULL_DIARIO`: `true` para varrer o DODF inteiro e capturar menções textuais, inclusive nomeações/exonerações do Poder Executivo.
+- `DODF_KEYWORDS`: termos extras separados por `;` ou quebra de linha.
+- `RELEVANT_SNIPPETS_ONLY`: `true` para enviar só os blocos relevantes quando a matéria for ampla.
+- `RELEVANT_CONTEXT_LINES`: quantidade de linhas vizinhas incluídas junto de cada termo encontrado.
 
 ## Deploy no Render
 
