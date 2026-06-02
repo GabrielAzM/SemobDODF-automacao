@@ -11,12 +11,13 @@ import sys
 import time
 import unicodedata
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from bs4 import BeautifulSoup
@@ -83,6 +84,8 @@ class Config:
     dodf_keywords: tuple[str, ...]
     relevant_snippets_only: bool
     relevant_context_lines: int
+    sent_state_file: str
+    skip_already_sent: bool
 
     @property
     def max_attachment_bytes(self) -> int:
@@ -211,6 +214,8 @@ def load_config(require_email: bool = True) -> Config:
         dodf_keywords=parse_keywords(os.getenv("DODF_KEYWORDS"), DEFAULT_DODF_KEYWORDS),
         relevant_snippets_only=parse_bool(os.getenv("RELEVANT_SNIPPETS_ONLY"), True),
         relevant_context_lines=max(0, int(os.getenv("RELEVANT_CONTEXT_LINES", "0"))),
+        sent_state_file=os.getenv("SENT_STATE_FILE", "state/sent_reports.json").strip(),
+        skip_already_sent=parse_bool(os.getenv("SKIP_ALREADY_SENT"), True),
     )
 
     if require_email:
@@ -749,6 +754,110 @@ def format_report_date(diario: DiarioInfo) -> str:
     return "data não identificada"
 
 
+def get_timezone(timezone_name: str) -> tzinfo:
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        if timezone_name == "America/Sao_Paulo":
+            return timezone(timedelta(hours=-3), timezone_name)
+        raise DodfError(f"Fuso horário inválido em TIMEZONE: {timezone_name}") from exc
+
+
+def today_in_timezone(timezone_name: str) -> date:
+    return datetime.now(get_timezone(timezone_name)).date()
+
+
+def parse_local_deadline(timezone_name: str, hhmm: str) -> datetime:
+    if not re.fullmatch(r"\d{2}:\d{2}", hhmm or ""):
+        raise DodfError("Horário inválido. Use o formato HH:MM, por exemplo 06:10.")
+
+    hour, minute = (int(part) for part in hhmm.split(":", 1))
+    if hour > 23 or minute > 59:
+        raise DodfError("Horário inválido. Use hora 00-23 e minuto 00-59.")
+
+    now = datetime.now(get_timezone(timezone_name))
+    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+
+def report_is_from_today(report: Report, config: Config) -> bool:
+    return report.diario.published_date == today_in_timezone(config.timezone)
+
+
+def build_report_until_today(
+    config: Config,
+    wait_until: str | None,
+    poll_interval_seconds: int,
+) -> Report | None:
+    deadline = parse_local_deadline(config.timezone, wait_until) if wait_until else None
+
+    while True:
+        report = build_report(config)
+        expected_date = today_in_timezone(config.timezone)
+        if report.diario.published_date == expected_date:
+            log(f"Edição do dia identificada: {format_report_date(report.diario)}.")
+            return report
+
+        found_date = format_report_date(report.diario)
+        log(
+            f"Edição atual do DODF é {found_date}; aguardando edição de "
+            f"{expected_date.strftime('%d/%m/%Y')}."
+        )
+
+        if deadline is None:
+            return None
+
+        now = datetime.now(get_timezone(config.timezone))
+        if now >= deadline:
+            log(f"Janela encerrada às {deadline.strftime('%H:%M')}. Email não enviado nesta tentativa.")
+            return None
+
+        sleep_seconds = min(max(1, poll_interval_seconds), max(1, int((deadline - now).total_seconds())))
+        log(f"Nova tentativa em {sleep_seconds}s.")
+        time.sleep(sleep_seconds)
+
+
+def report_state_key(report: Report) -> str:
+    if report.diario.published_date:
+        return report.diario.published_date.isoformat()
+    if report.diario.timestamp:
+        return str(report.diario.timestamp)
+    return "unknown"
+
+
+def load_sent_state(config: Config) -> dict[str, Any]:
+    path = Path(config.sent_state_file)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise DodfError(f"Arquivo de estado inválido: {path}") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def report_already_sent(config: Config, report: Report) -> bool:
+    sent = load_sent_state(config).get("sent", {})
+    return isinstance(sent, dict) and report_state_key(report) in sent
+
+
+def mark_report_sent(config: Config, report: Report) -> None:
+    path = Path(config.sent_state_file)
+    state = load_sent_state(config)
+    sent = state.get("sent", {})
+    if not isinstance(sent, dict):
+        sent = {}
+
+    sent[report_state_key(report)] = {
+        "published_date": report.diario.published_date.isoformat() if report.diario.published_date else None,
+        "timestamp": report.diario.timestamp,
+        "sent_at": datetime.now(get_timezone(config.timezone)).isoformat(timespec="seconds"),
+        "materias": len(report.materias),
+    }
+    state["sent"] = sent
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def plural_publicacoes(count: int) -> str:
     return "publicação" if count == 1 else "publicações"
 
@@ -990,6 +1099,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Envia relatório diário do DODF sobre publicações da SEMOB.")
     parser.add_argument("--dry-run", action="store_true", help="Coleta os dados e imprime um resumo sem enviar email.")
     parser.add_argument(
+        "--require-today",
+        action="store_true",
+        help="Só envia se o Diário carregado for da data atual no fuso configurado.",
+    )
+    parser.add_argument(
+        "--wait-until",
+        default="",
+        help="Com --require-today, tenta novamente até o horário local HH:MM.",
+    )
+    parser.add_argument(
+        "--poll-interval-seconds",
+        type=int,
+        default=300,
+        help="Intervalo entre tentativas quando --wait-until estiver ativo.",
+    )
+    parser.add_argument(
+        "--force-send",
+        action="store_true",
+        help="Envia mesmo se a edição do dia já estiver marcada como enviada.",
+    )
+    parser.add_argument(
         "--init-gmail-api",
         action="store_true",
         help="Abre o login OAuth do Google e salva o token local para envio via Gmail API.",
@@ -1007,7 +1137,17 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         config = load_config(require_email=not args.dry_run)
-        report = build_report(config)
+        if args.require_today:
+            report = build_report_until_today(
+                config,
+                wait_until=args.wait_until or None,
+                poll_interval_seconds=max(1, args.poll_interval_seconds),
+            )
+            if report is None:
+                print("Edição do dia ainda não identificada. Email não enviado nesta tentativa.")
+                return 0
+        else:
+            report = build_report(config)
 
         if not report.materias and not config.send_empty_report:
             print("Nenhuma publicação SEMOB encontrada e SEND_EMPTY_REPORT=false. Email não enviado.")
@@ -1017,9 +1157,14 @@ def main(argv: list[str] | None = None) -> int:
             print_dry_run(report)
             return 0
 
+        if config.skip_already_sent and not args.force_send and report_already_sent(config, report):
+            print(f"Edição {format_report_date(report.diario)} já enviada. Email não enviado novamente.")
+            return 0
+
         message = build_email_message(config, report)
         log(f"Modo de envio: {config.email_delivery}")
         send_email(config, message)
+        mark_report_sent(config, report)
         print(f"Email enviado para {', '.join(config.mail_to)}.")
         return 0
     except Exception as exc:

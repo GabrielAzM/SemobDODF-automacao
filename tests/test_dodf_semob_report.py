@@ -15,7 +15,9 @@ from dodf_semob_report import (
     decide_pdf_attachment,
     extract_full_text,
     extract_relevant_blocks,
+    mark_report_sent,
     matching_terms,
+    report_already_sent,
 )
 
 
@@ -42,6 +44,8 @@ def config() -> Config:
         dodf_keywords=DEFAULT_DODF_KEYWORDS,
         relevant_snippets_only=True,
         relevant_context_lines=0,
+        sent_state_file="state/sent_reports.json",
+        skip_already_sent=True,
     )
 
 
@@ -139,6 +143,32 @@ def test_email_without_results_mentions_empty_report() -> None:
     assert message["Subject"] == "DODF SEMOB - 01/06/2026 - 0 publicações"
     assert "Não foram encontradas publicações da SEMOB" in body
     assert "https://dodf.df.gov.br/pdf" in body
+
+
+def test_sent_state_marks_report_as_sent(tmp_path) -> None:
+    test_config = config()
+    test_config = Config(
+        **{
+            **test_config.__dict__,
+            "sent_state_file": str(tmp_path / "sent_reports.json"),
+        }
+    )
+    report = Report(
+        diario=DiarioInfo(
+            published_date=date(2026, 6, 2),
+            timestamp=1780369200,
+            pdfs=(),
+            demandantes={},
+        ),
+        materias=(),
+        pdf_attachment_result=None,
+    )
+
+    assert not report_already_sent(test_config, report)
+
+    mark_report_sent(test_config, report)
+
+    assert report_already_sent(test_config, report)
 
 
 def test_pdf_attachment_limit() -> None:

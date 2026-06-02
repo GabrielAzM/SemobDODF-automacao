@@ -64,6 +64,8 @@ Envie de verdade:
 - `DODF_KEYWORDS`: termos extras separados por `;` ou quebra de linha.
 - `RELEVANT_SNIPPETS_ONLY`: `true` para enviar só os blocos relevantes quando a matéria for ampla.
 - `RELEVANT_CONTEXT_LINES`: quantidade de linhas vizinhas incluídas junto de cada termo encontrado.
+- `SENT_STATE_FILE`: arquivo local usado para registrar edições já enviadas.
+- `SKIP_ALREADY_SENT`: `true` para evitar email duplicado no mesmo dia.
 
 ## Deploy no Render
 
@@ -105,13 +107,18 @@ powershell -ExecutionPolicy Bypass -File .\scripts\setup_local_gmail_api.ps1
 powershell -ExecutionPolicy Bypass -File .\scripts\run_local_report.ps1
 ```
 
-4. Se o email chegar, crie a tarefa diaria das 06:30:
+4. Se o email chegar, crie as tarefas diarias:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_task.ps1
 ```
 
-Os logs ficam em `logs/`. O computador precisa estar ligado e com acesso ao DODF no horario do envio.
+O instalador cria duas tarefas no Agendador do Windows:
+
+- `DODF SEMOB Report 05h40`: começa às 05:40 e tenta até 06:10. Assim que identificar a edição do dia, envia o email.
+- `DODF SEMOB Report 06h40`: tentativa reserva. Se a edição do dia já foi enviada pela tarefa principal, não envia de novo.
+
+Os logs ficam em `logs/` e o controle de duplicidade fica em `state/sent_reports.json`. O computador precisa estar ligado e com acesso ao DODF nos horarios do envio.
 
 ## Testes
 

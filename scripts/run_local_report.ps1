@@ -1,3 +1,11 @@
+param(
+    [switch]$RequireToday,
+    [string]$WaitUntil = "",
+    [int]$PollIntervalSeconds = 300,
+    [switch]$ForceSend,
+    [switch]$DryRun
+)
+
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
@@ -18,7 +26,26 @@ Push-Location $Root
 try {
     Write-Host "Rodando relatorio DODF SEMOB..."
     Write-Host "Log: $LogFile"
-    & $Python dodf_semob_report.py *>&1 | Tee-Object -FilePath $LogFile
+    $PythonArgs = @("dodf_semob_report.py")
+    if ($RequireToday) {
+        $PythonArgs += "--require-today"
+    }
+    if ($WaitUntil) {
+        $PythonArgs += "--wait-until"
+        $PythonArgs += $WaitUntil
+    }
+    if ($PollIntervalSeconds) {
+        $PythonArgs += "--poll-interval-seconds"
+        $PythonArgs += [string]$PollIntervalSeconds
+    }
+    if ($ForceSend) {
+        $PythonArgs += "--force-send"
+    }
+    if ($DryRun) {
+        $PythonArgs += "--dry-run"
+    }
+
+    & $Python @PythonArgs *>&1 | Tee-Object -FilePath $LogFile
     if ($LASTEXITCODE -ne 0) {
         throw "O relatorio falhou. Veja o log: $LogFile"
     }
