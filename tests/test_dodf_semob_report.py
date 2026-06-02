@@ -125,6 +125,15 @@ def test_relevant_blocks_extracts_only_matching_lines() -> None:
     assert "outro orgao" not in result
 
 
+def test_default_keywords_do_not_match_transito_only() -> None:
+    text = """
+    O Departamento de Trânsito do Distrito Federal informa alteração em procedimento
+    de fiscalização de trânsito e atendimento do DETRAN-DF.
+    """
+
+    assert matching_terms(text, DEFAULT_DODF_KEYWORDS) == ()
+
+
 def test_email_without_results_mentions_empty_report() -> None:
     report = Report(
         diario=DiarioInfo(
